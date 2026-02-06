@@ -372,38 +372,34 @@ jobs:
             curl -i "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/${file}"
           done
              # ------------------------------------------------------------
-      # 打包 SRS（在原脚本生成完成之后）
-      # ------------------------------------------------------------
-      - name: Pack SRS
+            - name: Pack sing SRS files
         run: |
           set -e
 
-          mkdir -p pack/geosite pack/geoip
+          # geosite
+          if [ -d "meta-rules-dat/geo/geosite" ]; then
+            cd meta-rules-dat/geo/geosite
+            echo "Packing geosite .srs files..."
+            zip -r geosite-srs.zip *.srs
+            echo "geosite-srs.zip created in $(pwd)"
+            cd - >/dev/null
+          else
+            echo "❌ meta-rules-dat/geo/geosite directory not found"
+            exit 1
+          fi
 
-          # 兼容常见目录结构
-          find . -type f -name "*.srs" | while read f; do
-            case "$f" in
-              *geosite*)
-                cp "$f" pack/geosite/
-                ;;
-              *geoip*)
-                cp "$f" pack/geoip/
-                ;;
-            esac
-          done
+          # geoip
+          if [ -d "meta-rules-dat/geo/geoip" ]; then
+            cd meta-rules-dat/geo/geoip
+            echo "Packing geoip .srs files..."
+            zip -r geoip-srs.zip *.srs
+            echo "geoip-srs.zip created in $(pwd)"
+            cd - >/dev/null
+          else
+            echo "❌ meta-rules-dat/geo/geoip directory not found"
+            exit 1
+          fi
 
-          cd pack
-          zip -r ../geosite-srs.zip geosite
-          zip -r ../geoip-srs.zip geoip
-
-      # ------------------------------------------------------------
-      # 上传产物（artifact 或 release 二选一）
-      # ------------------------------------------------------------
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: sing-box-srs
-          path: |
             geosite-srs.zip
             geoip-srs.zip
    
