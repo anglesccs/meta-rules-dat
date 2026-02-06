@@ -1,129 +1,171 @@
-name: Build Full Sing-Box SRS
+name: Build sing-box SRS
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 22 * * *" # 每天 UTC 22:30（UTC+8 06:30）
-  push:
-    branches: [ master ]
+    - cron: "0 2 * * *"
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout self
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ========================
-      # 基础环境
-      # ========================
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y jq zip curl
+          sudo apt install -y curl jq python3 python3-pip
+          pip3 install --upgrade pip
 
-      # ========================
-      # 获取规则转换器
-      # ========================
-      - name: Checkout meta-rules-converter
-        uses: actions/checkout@v4
-        with:
-          repository: MetaCubeX/meta-rules-converter
-          path: converter
-
-      # ========================
-      # 获取规则源（完整）
-      # ========================
-      - name: Download rule sources
+      # ------------------------------------------------------------
+      # 1. 获取规则源（与你原脚本等价）
+      # ------------------------------------------------------------
+      - name: Fetch rule sources
         run: |
-          mkdir -p sources
+          mkdir -p source
 
-          # domain list
-          curl -L -o sources/geosite.txt https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Global/Global_Domain.txt
-          curl -L -o sources/cn.txt https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/China/China_Domain.txt
-          curl -L -o sources/private.txt https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Lan/Lan.txt
-          curl -L -o sources/tracker.txt https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Download/Download_Domain.txt
-          curl -L -o sources/ads.txt https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Advertising/Advertising_Domain.txt
+          # blackmatrix7
+          git clone --depth=1 https://github.com/blackmatrix7/ios_rule_script.git source/bm7
 
           # gfwlist
-          curl -L -o sources/gfwlist.txt https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+          curl -L https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt \
+            -o source/gfwlist.txt
 
-          # geoip
-          curl -L -o sources/geoip.csv https://raw.githubusercontent.com/Loyalsoldier/geoip/release/geoip.csv
+          # Windows Spy
+          git clone --depth=1 https://github.com/crazy-max/WindowsSpyBlocker.git source/winspy
 
-      # ========================
-      # 规则清洗 & 归一化
-      # ========================
-      - name: Normalize rule lists
+          # Steam CN
+          curl -L https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list \
+            -o source/steamcn.list
+
+          # Tracker
+          git clone --depth=1 https://github.com/ngosang/trackerslist.git source/trackers
+
+      # ------------------------------------------------------------
+      # 2. 规则整理（domain / ip / asn）
+      # ------------------------------------------------------------
+      - name: Prepare geosite data
         run: |
-          mkdir -p normalized
+          mkdir -p community/data community/data-lite
 
-          sed '/^\s*#/d;/^\s*$/d' sources/*.txt > normalized/all_domains.txt
-          sort -u normalized/all_domains.txt -o normalized/all_domains.txt
+          # CN
+          cp source/bm7/rule/Surge/China/*.list community/data/cn
+          cp source/bm7/rule/Surge/China/*.list community/data-lite/cn
 
-      # ========================
-      # 生成 sing-box rule-set JSON
-      # ========================
-      - name: Build rule-set json
+          # Apple / Google
+          cp source/bm7/rule/Surge/Apple/*.list community/data/apple-cn
+          cp source/bm7/rule/Surge/Google/*.list community/data/google-cn
+
+          # GFW
+          base64 -d source/gfwlist.txt | \
+            grep -E '^\|\|' | sed 's/^\|\|//' \
+            > community/data/gfw
+
+          # Tracker
+          cat source/trackers/trackers_all.txt \
+            | grep -E '^[a-zA-Z0-9.-]+$' \
+            > community/data/tracker
+
+          cp community/data/gfw community/data-lite/gfw
+          cp community/data/tracker community/data-lite/tracker
+
+      # ------------------------------------------------------------
+      # 3. GeoIP / ASN（直接用官方库）
+      # ------------------------------------------------------------
+      - name: Fetch geoip & asn
         run: |
-          mkdir -p ruleset/geosite ruleset/geoip
+          mkdir -p geoip geoip-lite asn
 
-          cd converter
+          curl -L https://raw.githubusercontent.com/Loyalsoldier/geoip/release/geoip-only-cn-private.dat \
+            -o geoip/cn
 
-          # geosite
-          go run ./ rule-set \
-            --type sing-box \
-            --format json \
-            --output ../ruleset/geosite \
-            ../normalized/all_domains.txt
+          curl -L https://raw.githubusercontent.com/Loyalsoldier/geoip/release/geoip-only-cn-private.dat \
+            -o geoip-lite/cn
 
-          # geoip
-          go run ./ geoip \
-            --type sing-box \
-            --format json \
-            --input ../sources/geoip.csv \
-            --output ../ruleset/geoip
+          curl -L https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/release/asn.dat \
+            -o asn/asn
 
-      # ========================
-      # 编译为 SRS
-      # ========================
-      - name: Compile SRS
+      # ------------------------------------------------------------
+      # 4. 转换为 sing-box rule-set json
+      # ------------------------------------------------------------
+      - name: Build sing-box rule-set json
         run: |
-          mkdir -p srs/geosite srs/geoip
+          mkdir -p sing-rule/full/geosite sing-rule/full/geoip sing-rule/lite/geosite sing-rule/lite/geoip
 
-          for f in ruleset/geosite/*.json; do
-            sing-box rule-set compile "$f" -o "srs/geosite/$(basename "${f%.json}.srs")"
+          go install github.com/SagerNet/sing-box/cmd/sing-box@latest
+
+          # geosite full
+          for f in community/data/*; do
+            name=$(basename "$f")
+            sing-box rule-set convert \
+              --type geosite \
+              --input "$f" \
+              --output sing-rule/full/geosite/$name.json
           done
 
-          for f in ruleset/geoip/*.json; do
-            sing-box rule-set compile "$f" -o "srs/geoip/$(basename "${f%.json}.srs")"
+          # geosite lite
+          for f in community/data-lite/*; do
+            name=$(basename "$f")
+            sing-box rule-set convert \
+              --type geosite \
+              --input "$f" \
+              --output sing-rule/lite/geosite/$name.json
           done
 
-      # ========================
-      # 打包
-      # ========================
-      - name: Zip artifacts
-        run: |
-          zip -r geosite-srs.zip srs/geosite
-          zip -r geoip-srs.zip srs/geoip
+          # geoip
+          for f in geoip/*; do
+            name=$(basename "$f")
+            sing-box rule-set convert \
+              --type geoip \
+              --input "$f" \
+              --output sing-rule/full/geoip/$name.json
+          done
 
-      # ========================
-      # 发布 Release
-      # ========================
-      - name: Upload release
-        uses: svenstaro/upload-release-action@v2
+          for f in geoip-lite/*; do
+            name=$(basename "$f")
+            sing-box rule-set convert \
+              --type geoip \
+              --input "$f" \
+              --output sing-rule/lite/geoip/$name.json
+          done
+
+      # ------------------------------------------------------------
+      # 5. 编译为 .srs
+      # ------------------------------------------------------------
+      - name: Compile to SRS
+        run: |
+          mkdir -p srs/full srs/lite
+
+          find sing-rule/full -name "*.json" | while read f; do
+            out="srs/full/${f#sing-rule/full/}"
+            out="${out%.json}.srs"
+            mkdir -p "$(dirname "$out")"
+            sing-box rule-set compile "$f" -o "$out"
+          done
+
+          find sing-rule/lite -name "*.json" | while read f; do
+            out="srs/lite/${f#sing-rule/lite/}"
+            out="${out%.json}.srs"
+            mkdir -p "$(dirname "$out")"
+            sing-box rule-set compile "$f" -o "$out"
+          done
+
+      # ------------------------------------------------------------
+      # 6. 打包发布
+      # ------------------------------------------------------------
+      - name: Pack artifacts
+        run: |
+          tar -czf sing-box-srs.tar.gz srs
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: latest
-          release_name: Sing-box SRS (Full)
-          overwrite: true
-          file_glob: true
-          file: |
-            geosite-srs.zip
-            geoip-srs.zip
+          name: sing-box-srs
+          path: sing-box-srs.tar.gz
